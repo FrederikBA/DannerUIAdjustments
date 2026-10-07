@@ -257,6 +257,33 @@ local function PaintBag(btn, look)
         end
     end
 
+    -- Empty bag slot: Blizzard shows a placeholder "wings" icon there. Hide it
+    -- (alpha only) while no bag is equipped; the slot background and border stay.
+    if not isKeyRing and btn ~= _G.MainMenuBarBackpackButton then
+        local id = btn.GetID and btn:GetID()
+        local empty
+        if id and id > 0 then empty = not GetInventoryItemID("player", id) end
+        local function IsPlaceholder(tex)
+            local path = tex.GetTexture and tex:GetTexture()
+            local atlas = tex.GetAtlas and tex:GetAtlas()
+            path = type(path) == "string" and path:lower() or ""
+            atlas = type(atlas) == "string" and atlas:lower() or ""
+            return path:find("paperdoll", 1, true) or path:find("slot%-bag")
+                or atlas:find("bag%-empty") or atlas:find("slot%-bag")
+        end
+        if empty == nil and icon then empty = IsPlaceholder(icon) and true or false end
+        local a = empty and 0 or 1
+        if icon and icon.SetAlpha then icon:SetAlpha(a) end
+        -- The placeholder can also live on another region of the button.
+        for i = 1, #regions do
+            local r = regions[i]
+            if r ~= icon and r ~= d.bg and r.GetObjectType and r:GetObjectType() == "Texture"
+               and IsPlaceholder(r) then
+                r:SetAlpha(a)
+            end
+        end
+    end
+
     StyleHighlights(btn, look)
 
     -- Border: the action bar border colour; optionally the bag's quality colour.
