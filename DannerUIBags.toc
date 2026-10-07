@@ -1,0 +1,7 @@
+## Interface: 16001
+## Title: DannerUIBags
+## Notes: Retexture bag bar
+## Author: Danner
+## Version: 0.1
+
+ForeverBagSkin.lua
