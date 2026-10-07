@@ -4,8 +4,9 @@
 --  An EllesmereUI extension for WoW Forever: gives the bag bar buttons (backpack,
 --  bag slots, reagent bag, keyring) AND the micro menu buttons the same look as
 --  EllesmereUI's action bar buttons: flat dark slot background, square zoomed
---  icon, thin solid border and the action bar hover highlight. The micro menu
---  buttons are also resized to the action bar button size. The look is read live
+--  icon, thin solid border and (bags) the action bar hover highlight. The micro
+--  buttons keep Blizzard's own hover glyph and are resized to the action bar
+--  button size. The look is read live
 --  from the user's Action Bars profile, so it follows their slot colour, zoom,
 --  border and highlight settings (/dbags refresh after changing them).
 --
@@ -186,8 +187,8 @@ end
 --  Shared painting
 --------------------------------------------------------------------------------
 -- Hover (and, for plain buttons, pressed) highlight in the action bar look.
--- `anchor` is the frame the highlight covers; micro buttons keep their own
--- Pushed texture, which is the pressed glyph.
+-- `anchor` is the frame the highlight covers. Not used on micro buttons: their
+-- Highlight/Pushed textures are glyphs, not overlays.
 local function StyleHighlights(btn, look, anchor, keepPushed)
     anchor = anchor or btn
     local hl = btn.GetHighlightTexture and btn:GetHighlightTexture()
@@ -410,26 +411,65 @@ local function CollectMicroButtons()
 end
 
 -- Crop the glyph's baked bevel ring and fill the box with it: stock width, the
--- increased height of the action bar buttons.
+-- increased height of the action bar buttons. The hover glyph keeps its
+-- HIGHLIGHT layer, so the engine still shows it only while hovered.
 local function TrimGlyph(tex, box)
     if not tex or not tex.SetTexCoord then return end
-    if tex.SetDrawLayer then tex:SetDrawLayer("ARTWORK") end
+    if tex.SetDrawLayer and not (tex.GetDrawLayer and tex:GetDrawLayer() == "HIGHLIGHT") then
+        tex:SetDrawLayer("ARTWORK")
+    end
     tex:SetTexCoord(MICRO_TRIM, 1 - MICRO_TRIM, MICRO_TRIM, 1 - MICRO_TRIM)
     tex:ClearAllPoints()
     tex:SetPoint("TOPLEFT", box, "TOPLEFT", 1, -1)
     tex:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -1, 1)
 end
 
+-- Every state of the glyph: Normal/Pushed/Disabled, the stock hover glyph (the
+-- Highlight texture is Blizzard's brighter copy of the icon, left as it is) and
+-- the character portrait.
+local function MicroGlyphs(btn)
+    return {
+        btn.GetNormalTexture and btn:GetNormalTexture(),
+        btn.GetPushedTexture and btn:GetPushedTexture(),
+        btn.GetDisabledTexture and btn:GetDisabledTexture(),
+        btn.GetHighlightTexture and btn:GetHighlightTexture(),
+        btn.Portrait,
+    }
+end
+
+-- Puts one button's art back in our box: plate art faded, glyphs cropped and
+-- anchored. Blizzard re-anchors the glyphs and re-shows plate art when a button
+-- is pressed or released, so this runs right then, for that button only (no
+-- resize, no relayout, so the rest of the row is left alone).
+local microDirty = false
+local function RefitMicro(btn)
+    local d = FD[btn]
+    if not (DB.microBar and d and d.box) then return end
+    if InCombatLockdown() then microDirty = true; return end
+    for _, k in ipairs(MICRO_DECO) do
+        local r = btn[k]
+        if r and r.SetAlpha then r:SetAlpha(0) end
+    end
+    for _, tex in pairs(MicroGlyphs(btn)) do TrimGlyph(tex, d.box) end
+end
+
+local function HookMicroPress(btn, d)
+    if d.pressHooked then return end
+    d.pressHooked = true
+    local function refit() pcall(RefitMicro, btn) end
+    btn:HookScript("OnMouseDown", refit)
+    btn:HookScript("OnMouseUp", refit)
+    -- Blizzard's own pressed/normal state switch (also run for the button whose
+    -- window opens or closes).
+    for _, method in ipairs({ "SetPushed", "SetNormal" }) do
+        if type(btn[method]) == "function" then hooksecurefunc(btn, method, refit) end
+    end
+end
+
 local function PaintMicro(btn, look, target)
     local d = GetFD(btn)
     -- The stock width, recorded before the first resize.
     if not d.origW then d.origW = btn:GetWidth() end
-    local glyphs = {
-        btn.GetNormalTexture and btn:GetNormalTexture(),
-        btn.GetPushedTexture and btn:GetPushedTexture(),
-        btn.GetDisabledTexture and btn:GetDisabledTexture(),
-        btn.Portrait,
-    }
     for _, k in ipairs(MICRO_DECO) do
         local r = btn[k]
         if r and r.SetAlpha then r:SetAlpha(0) end
@@ -463,16 +503,15 @@ local function PaintMicro(btn, look, target)
     d.box:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", 0, MICRO_GAP)
     d.bg:SetColorTexture(look.bgR, look.bgG, look.bgB, look.bgA)
 
-    for _, tex in pairs(glyphs) do TrimGlyph(tex, d.box) end
+    for _, tex in pairs(MicroGlyphs(btn)) do TrimGlyph(tex, d.box) end
+    HookMicroPress(btn, d)
 
-    StyleHighlights(btn, look, d.box, true)
     -- Own strips rather than EUI's PP border: the box is anchored (no size of its
     -- own), and the strips follow it however Blizzard's layout moves the button.
     SetStripBorder(d, d.box, look, look.brdR, look.brdG, look.brdB, look.brdA)
     return resized
 end
 
-local microDirty = false
 local function PaintMicroMenu()
     if not DB.microBar then return end
     if EUISkinActive("micromenu") then WarnStandDown("micromenu", "Micro Menu"); return end
