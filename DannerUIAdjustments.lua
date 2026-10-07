@@ -29,6 +29,7 @@ local DEFAULTS = {
     enabled = true,          -- skin the bag bar
     microBar = true,         -- skin the micro menu
     microMatchSize = true,   -- resize micro buttons to the action bar button size
+    microNoDim = true,       -- keep disabled/locked micro buttons at full opacity
     matchActionBars = true,  -- read the look from the EUI Action Bars profile
     qualityBorders = false,  -- colour a bag's border by item quality (uncommon+)
 }
@@ -512,7 +513,25 @@ local function PaintMicro(btn, look, target)
     return resized
 end
 
+-- Blizzard's micro button OnDisable sets alpha 0.5: locked buttons always, and
+-- every other button while a full-screen panel is open. Alpha is not a protected
+-- write, so this also runs in combat. Independent of the skin (and of EUI's).
+local noDimHooked = setmetatable({}, { __mode = "k" })
+local function UndimMicro(btn)
+    if DB.microNoDim and not btn:IsEnabled() then btn:SetAlpha(1) end
+end
+local function HookMicroNoDim()
+    for _, btn in ipairs(CollectMicroButtons()) do
+        if not noDimHooked[btn] and btn.HookScript and btn.IsEnabled then
+            noDimHooked[btn] = true
+            btn:HookScript("OnDisable", UndimMicro)
+        end
+        if btn.IsEnabled then pcall(UndimMicro, btn) end
+    end
+end
+
 local function PaintMicroMenu()
+    HookMicroNoDim()
     if not DB.microBar then return end
     if EUISkinActive("micromenu") then WarnStandDown("micromenu", "Micro Menu"); return end
     -- Micro buttons are secure: nothing is written in combat, it is replayed after.
@@ -636,6 +655,13 @@ local function RegisterOptions()
                             if DB.microMatchSize then DannerUIBags_Refresh()
                             else Print("Micro button size will return to stock after /reload.") end
                         end); y = y - h
+                    _, h = W:Toggle(parent, "Don't dim disabled / locked buttons", y,
+                        function() return DB.microNoDim end,
+                        function(v)
+                            DB.microNoDim = v and true or false
+                            if DB.microNoDim then DannerUIBags_Refresh()
+                            else Print("Micro button dimming returns after /reload.") end
+                        end); y = y - h
                     _, h = W:SectionHeader(parent, "LOOK", y); y = y - h
                     _, h = W:Toggle(parent, "Match Action Bars look", y,
                         function() return DB.matchActionBars end,
@@ -670,7 +696,7 @@ boot:SetScript("OnEvent", function(self, event, name)
     end
 end)
 
-local HELP = "/dbags on | off | micro | microsize | quality | match | refresh | config | debug"
+local HELP = "/dbags on | off | micro | microsize | nodim | quality | match | refresh | config | debug"
 SLASH_DANNERUIBAGS1 = "/dbags"
 SLASH_DANNERUIBAGS2 = "/danneruibags"
 SlashCmdList.DANNERUIBAGS = function(msg)
@@ -687,6 +713,7 @@ SlashCmdList.DANNERUIBAGS = function(msg)
         DannerUIBags_Refresh()
     elseif msg == "micro" then toggle("microBar", "Micro menu skin")
     elseif msg == "microsize" then toggle("microMatchSize", "Micro button size match")
+    elseif msg == "nodim" then toggle("microNoDim", "Keep disabled micro buttons opaque")
     elseif msg == "quality" then toggle("qualityBorders", "Quality borders")
     elseif msg == "match" then toggle("matchActionBars", "Match Action Bars look")
     elseif msg == "config" then
