@@ -1,9 +1,9 @@
 ## Interface: 16001
-## Title: |cff0cd29fDanner|rUIBags
+## Title: |cff0cd29fDanner|rUIAdjustments
 ## Notes: Reskins the WoW Forever bag bar with the EllesmereUI action bar button look.
 ## Author: Danner
 ## Version: 0.3
 ## OptionalDeps: EllesmereUI, EllesmereUIActionBars, EllesmereUIBlizzardSkin
 ## SavedVariables: DannerUIBagsDB
 
-DannerUIBags.lua
+DannerUIAdjustments.lua
