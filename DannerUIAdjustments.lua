@@ -541,6 +541,33 @@ local function TrimGlyph(tex, box)
     tex:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -1, 1)
 end
 
+-- The character button's player portrait. Their PortraitMask (a fixed-size
+-- shape for the stock button, nudged 2px by their SetPushed) is dropped, and
+-- the portrait is drawn square, centred in the box and sized like the Game Menu
+-- gear. Blizzard re-renders the portrait on portrait events, so the crop is put
+-- back after every SetPortraitTexture.
+local CHARACTER_ICON_SCALE = 1 -- icon side, as a share of the button width
+local CHARACTER_ICON_CROP = 0.08 -- trimmed off each edge of the portrait
+local portraitHooked = false
+local function FitPortrait(btn, box)
+    local p = btn.Portrait
+    if not (p and p.SetTexCoord) then return end
+    if not portraitHooked then
+        portraitHooked = true
+        hooksecurefunc("SetPortraitTexture", function(tex)
+            if tex == p and DB.microBar then pcall(FitPortrait, btn, box) end
+        end)
+    end
+    local mask = btn.PortraitMask
+    if mask and p.RemoveMaskTexture then p:RemoveMaskTexture(mask) end
+    p:ClearAllPoints()
+    p:SetPoint("CENTER", box, "CENTER")
+    local side = (btn:GetWidth() or 0) * CHARACTER_ICON_SCALE
+    if side > 1 then p:SetSize(side, side) end
+    local c = CHARACTER_ICON_CROP
+    p:SetTexCoord(c, 1 - c, c, 1 - c)
+end
+
 -- Every state of the glyph: Normal/Pushed/Disabled, the stock hover glyph (the
 -- Highlight texture is Blizzard's brighter copy of the icon, left as it is) and
 -- the character portrait.
@@ -569,6 +596,7 @@ local function RefitMicro(btn)
         if r and r.SetAlpha then r:SetAlpha(0) end
     end
     for _, tex in pairs(MicroGlyphs(btn)) do TrimGlyph(tex, d.box) end
+    FitPortrait(btn, d.box)
     StyleGameMenu(btn, d)
 end
 
@@ -702,6 +730,7 @@ local function PaintMicro(btn, look, target)
     d.bg:SetColorTexture(look.bgR, look.bgG, look.bgB, look.bgA)
 
     for _, tex in pairs(MicroGlyphs(btn)) do TrimGlyph(tex, d.box) end
+    FitPortrait(btn, d.box)
     StyleGameMenu(btn, d)
     HookMicroPress(btn, d)
 
