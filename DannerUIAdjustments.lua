@@ -258,6 +258,80 @@ end
 --------------------------------------------------------------------------------
 --  Bag bar
 --------------------------------------------------------------------------------
+-- Keyring art that has to stay the way we left it. While an item is on the
+-- cursor, something outside the keyring's own handlers re-shows its art and
+-- re-crops its glyph; a next-frame repaint shows that as a one-frame flash, so
+-- these per-texture hooks undo each write the moment it happens.
+local keepFaded = setmetatable({}, { __mode = "k" })    -- texture -> true: held at alpha 0
+local keepCrop = setmetatable({}, { __mode = "k" })     -- texture -> zoom: held cropped
+local keepUnmasked = setmetatable({}, { __mode = "k" }) -- texture -> true: masks stripped
+local glyphHidden = setmetatable({}, { __mode = "k" })  -- glyph texture we faded for showing frame art
+local lockHooked = setmetatable({}, { __mode = "k" })
+
+-- Stock slot/bevel art (UI-HUD-ActionBar-IconFrame-*), as opposed to a glyph.
+local function IsFrameArt(tex)
+    local atlas = tex.GetAtlas and tex:GetAtlas()
+    return type(atlas) == "string" and atlas:lower():find("iconframe", 1, true) ~= nil
+end
+
+-- The keyring's icon texture carries either its glyph or Blizzard's slot art:
+-- hidden while it is slot art, shown again once Blizzard puts a glyph back.
+local function SyncGlyph(tex)
+    if IsFrameArt(tex) then
+        glyphHidden[tex] = true
+        if tex:GetAlpha() > 0 then tex:SetAlpha(0) end
+    elseif glyphHidden[tex] then
+        glyphHidden[tex] = nil
+        tex:SetAlpha(1)
+    end
+end
+
+local function HookLocks(tex)
+    if lockHooked[tex] then return end
+    lockHooked[tex] = true
+    if tex.SetAlpha then
+        hooksecurefunc(tex, "SetAlpha", function(self, a)
+            if a and a > 0 and (keepFaded[self] or (keepCrop[self] and IsFrameArt(self))) then
+                self:SetAlpha(0)
+            end
+        end)
+    end
+    -- SetTexture/SetAtlas reset the tex coords: crop again, and re-check
+    -- whether the glyph texture now holds slot art.
+    local function recrop(self)
+        local z = keepCrop[self]
+        if z then
+            self:SetTexCoord(z, 1 - z, z, 1 - z)
+            SyncGlyph(self)
+        end
+    end
+    for _, m in ipairs({ "SetTexture", "SetAtlas" }) do
+        if tex[m] then hooksecurefunc(tex, m, recrop) end
+    end
+    if tex.AddMaskTexture then
+        hooksecurefunc(tex, "AddMaskTexture", function(self, mask)
+            if keepUnmasked[self] and mask then pcall(self.RemoveMaskTexture, self, mask) end
+        end)
+    end
+end
+
+local function KeepFaded(tex, on)
+    if not (tex and tex.SetAlpha) then return end
+    keepFaded[tex] = on or nil
+    if on then
+        tex:SetAlpha(0)
+        -- A texture that refuses the hooks still gets faded by the repaints.
+        if not pcall(HookLocks, tex) then keepFaded[tex] = nil end
+    end
+end
+
+local function KeepGlyph(tex, zoom)
+    if not (tex and tex.SetTexCoord) then return end
+    keepCrop[tex] = zoom
+    keepUnmasked[tex] = true
+    HookLocks(tex)
+end
+
 -- The keyring's frame art sits in child frames (a NineSlice border built after
 -- the first pass): fade their textures, walking Blizzard's own frames only.
 local function FadeKeyRingArt(f, depth)
@@ -269,7 +343,7 @@ local function FadeKeyRingArt(f, depth)
             local regions = { c:GetRegions() }
             for j = 1, #regions do
                 local r = regions[j]
-                if r and r.GetObjectType and r:GetObjectType() == "Texture" then r:SetAlpha(0) end
+                if r and r.GetObjectType and r:GetObjectType() == "Texture" then KeepFaded(r, true) end
             end
             FadeKeyRingArt(c, depth + 1)
         end
@@ -299,13 +373,24 @@ local function PaintBag(btn, look)
         end
         FadeKeyRingArt(btn, 1)
         if not (icon and icon.GetTexture and icon:GetTexture()) then icon = nt end
+        if icon then
+            -- It may have been held faded while it was the bevel: release it to
+            -- Blizzard (no alpha write of ours, like before the locks existed).
+            keepFaded[icon] = nil
+            pcall(KeepGlyph, icon, look.zoom)
+            SyncGlyph(icon)
+        end
     end
     if icon and icon.SetTexCoord then
         icon:SetTexCoord(look.zoom, 1 - look.zoom, look.zoom, 1 - look.zoom)
     end
-    -- The bevel NormalTexture fades, except while it is the keyring glyph.
-    if nt and nt ~= icon then nt:SetAlpha(0) end
-    if btn.IconBorder then btn.IconBorder:SetAlpha(0) end
+    -- The bevel NormalTexture fades, except while it is the keyring glyph. The
+    -- keyring's art is held faded (see KeepFaded); the other bags repaint in time.
+    local function Fade(t)
+        if isKeyRing then KeepFaded(t, true) else t:SetAlpha(0) end
+    end
+    if nt and nt ~= icon then Fade(nt) end
+    if btn.IconBorder then Fade(btn.IconBorder) end
 
     local regions = { btn:GetRegions() }
     for i = 1, #regions do
@@ -315,9 +400,10 @@ local function PaintBag(btn, look)
             -- pcall: a texture the mask is not on may reject the removal.
             if icon and icon.RemoveMaskTexture then pcall(icon.RemoveMaskTexture, icon, r) end
             if nt and nt ~= icon and nt.RemoveMaskTexture then pcall(nt.RemoveMaskTexture, nt, r) end
-        elseif kind == "Texture" and r ~= d.bg then
+        -- The keyring's icon is handled by SyncGlyph (it can hold its glyph too).
+        elseif kind == "Texture" and r ~= d.bg and not (isKeyRing and r == icon) then
             local atlas = r.GetAtlas and r:GetAtlas()
-            if atlas and atlas:lower():find("iconframe", 1, true) then r:SetAlpha(0) end
+            if atlas and atlas:lower():find("iconframe", 1, true) then Fade(r) end
         end
     end
 
@@ -361,6 +447,14 @@ local function PaintBag(btn, look)
     ApplyBorder(btn, d, look, r, g, b, a)
 end
 
+local function SafePaintBag(btn, look, name)
+    local ok, err = pcall(PaintBag, btn, look)
+    if not ok and not GetFD(btn).errored then
+        GetFD(btn).errored = true
+        Print((name or (btn.GetName and btn:GetName()) or "bag button") .. ": " .. tostring(err))
+    end
+end
+
 local function PaintBags()
     if not DB.enabled then return end
     if EUISkinActive("bagbar") then WarnStandDown("bagbar", "Bag Bar"); return end
@@ -369,10 +463,32 @@ local function PaintBags()
     for _, name in ipairs(BAG_BUTTONS) do
         local btn = _G[name]
         if btn and not (btn.IsForbidden and btn:IsForbidden()) then
-            local ok, err = pcall(PaintBag, btn, look)
-            if not ok and not GetFD(btn).errored then
-                GetFD(btn).errored = true
-                Print(name .. ": " .. tostring(err))
+            SafePaintBag(btn, look, name)
+        end
+    end
+end
+
+-- Repaints one bag button right after Blizzard restyles it. Picking an item up
+-- (CURSOR_CHANGED / ITEM_LOCK_CHANGED) makes the bag slots re-apply their stock
+-- textures in their own event handlers, and nothing repaints them until the item
+-- is put down (BAG_UPDATE_DELAYED); this puts our look back in the same frame.
+local function RepaintBag(btn)
+    if not DB.enabled or EUISkinActive("bagbar") then return end
+    SafePaintBag(btn, GetLook())
+end
+
+local function HookBagButtons()
+    for _, name in ipairs(BAG_BUTTONS) do
+        local btn = _G[name]
+        if btn and not (btn.IsForbidden and btn:IsForbidden()) then
+            local d = GetFD(btn)
+            if not d.repaintHooked then
+                d.repaintHooked = true
+                local function repaint() RepaintBag(btn) end
+                if btn.HookScript then btn:HookScript("OnEvent", repaint) end
+                for _, method in ipairs({ "UpdateTextures", "UpdateTexture", "SetItemButtonTexture" }) do
+                    if type(btn[method]) == "function" then hooksecurefunc(btn, method, repaint) end
+                end
             end
         end
     end
@@ -591,15 +707,16 @@ local function Install()
     f:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
     f:RegisterEvent("PLAYER_REGEN_ENABLED")
     f:RegisterEvent("UI_SCALE_CHANGED")
+    -- Picking up / dragging an item restyles the bag slots (see RepaintBag).
+    f:RegisterEvent("CURSOR_CHANGED")
+    f:RegisterEvent("ITEM_LOCK_CHANGED")
     f:SetScript("OnEvent", function(_, event)
         if event == "PLAYER_REGEN_ENABLED" and not microDirty then return end
         SchedulePaint()
     end)
-    -- The keyring rebuilds its art in its own texture update: repaint right after.
-    local kr = _G.KeyRingButton
-    if kr and kr.UpdateTextures then
-        hooksecurefunc(kr, "UpdateTextures", SchedulePaint)
-    end
+    -- The bag buttons (keyring included) rebuild their art in their own event
+    -- handlers and texture updates: repaint each one right after.
+    HookBagButtons()
     -- Blizzard re-anchors the micro glyphs here (several times per frame on
     -- routine events): the debounce collapses each burst into one repaint.
     if _G.UpdateMicroButtons then
@@ -727,6 +844,21 @@ SlashCmdList.DANNERUIBAGS = function(msg)
             tostring(mm and mm.Layout ~= nil), tostring(TargetScreenSize())))
         for _, btn in ipairs(CollectMicroButtons()) do
             Print(("  %s %.0fx%.0f"):format(btn.GetName and btn:GetName() or "?", btn:GetWidth() or 0, btn:GetHeight() or 0))
+        end
+        -- The keyring's glyph/bevel textures and whether we hold them faded.
+        local kr = _G.KeyRingButton
+        if kr then
+            local function Desc(label, t)
+                if not t then return Print("  keyring " .. label .. ": none") end
+                Print(("  keyring %s: tex=%s atlas=%s alpha=%.2f shown=%s faded=%s crop=%s glyphHidden=%s"):format(label,
+                    tostring(t.GetTexture and t:GetTexture()), tostring(t.GetAtlas and t:GetAtlas()),
+                    t:GetAlpha() or -1, tostring(t:IsShown()), tostring(keepFaded[t] or false), tostring(keepCrop[t]),
+                    tostring(glyphHidden[t] or false)))
+            end
+            Desc("icon", _G.KeyRingButtonIconTexture)
+            Desc("normal", kr.GetNormalTexture and kr:GetNormalTexture())
+            Desc("border", kr.IconBorder)
+            Print("  keyring errored: " .. tostring(GetFD(kr).errored or false))
         end
     else
         Print(HELP)
