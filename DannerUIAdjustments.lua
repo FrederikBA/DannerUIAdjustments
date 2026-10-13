@@ -559,6 +559,7 @@ end
 -- is pressed or released, so this runs right then, for that button only (no
 -- resize, no relayout, so the rest of the row is left alone).
 local microDirty = false
+local StyleGameMenu -- defined below
 local function RefitMicro(btn)
     local d = FD[btn]
     if not (DB.microBar and d and d.box) then return end
@@ -568,6 +569,86 @@ local function RefitMicro(btn)
         if r and r.SetAlpha then r:SetAlpha(0) end
     end
     for _, tex in pairs(MicroGlyphs(btn)) do TrimGlyph(tex, d.box) end
+    StyleGameMenu(btn, d)
+end
+
+-- Game Menu button: the modern micro menu glyph for it is a "?" (it took over
+-- the Help button's art). Blizzard keeps re-setting the button's own glyph
+-- textures, so they are held invisible and our own static icon is drawn in
+-- their place, round and sized like the visible part of the other glyphs.
+-- The latency / status bars Blizzard draws over it are hidden too.
+local GAME_MENU_ICON = "Interface\\Icons\\inv_10_engineering_manufacturedparts_gear_uprez"
+local GAME_MENU_ICON_SCALE = 0.7 -- icon diameter, as a share of the button width
+local GAME_MENU_ICON_CROP = 0.1  -- crops the icon's baked-in frame off each edge
+local ROUND_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
+local GAME_MENU_EXTRAS = { "MainMenuBarPerformanceBar", "MainMenuBarPerformanceBarFrame", "MainMenuBarDownload" }
+local fadedFrames = setmetatable({}, { __mode = "k" })
+
+-- Holds a Blizzard frame at alpha 0 (it re-shows itself on its own updates).
+local function KeepFrameFaded(f)
+    if not (f and f.SetAlpha) or OURS[f] then return end
+    f:SetAlpha(0)
+    if not fadedFrames[f] then
+        fadedFrames[f] = true
+        hooksecurefunc(f, "SetAlpha", function(self, a)
+            if a and a > 0 then self:SetAlpha(0) end
+        end)
+    end
+end
+
+local function UpdateGameMenuIcon(btn)
+    local d = FD[btn]
+    if d and d.gmIcon and btn.IsEnabled then d.gmIcon:SetDesaturated(not btn:IsEnabled()) end
+end
+
+function StyleGameMenu(btn, d)
+    if btn ~= _G.MainMenuMicroButton then return end
+    if not d.gmIcon then
+        -- On our box, so it draws above the button's own textures. Hover adds
+        -- the same icon on top so it brightens.
+        local icon = d.box:CreateTexture(nil, "ARTWORK")
+        icon:SetPoint("CENTER", d.box, "CENTER")
+        icon:SetTexture(GAME_MENU_ICON)
+        local hover = d.box:CreateTexture(nil, "OVERLAY")
+        hover:SetAllPoints(icon)
+        hover:SetTexture(GAME_MENU_ICON)
+        hover:SetBlendMode("ADD")
+        hover:SetAlpha(0.35)
+        hover:Hide()
+        local c = GAME_MENU_ICON_CROP
+        icon:SetTexCoord(c, 1 - c, c, 1 - c)
+        hover:SetTexCoord(c, 1 - c, c, 1 - c)
+        if icon.AddMaskTexture then
+            local mask = d.box:CreateMaskTexture()
+            mask:SetTexture(ROUND_MASK, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+            mask:SetAllPoints(icon)
+            icon:AddMaskTexture(mask)
+            hover:AddMaskTexture(mask)
+        end
+        d.gmIcon = icon
+        btn:HookScript("OnEnter", function() hover:Show() end)
+        btn:HookScript("OnLeave", function() hover:Hide() end)
+        btn:HookScript("OnEnable", UpdateGameMenuIcon)
+        btn:HookScript("OnDisable", UpdateGameMenuIcon)
+    end
+    local side = (btn:GetWidth() or 0) * GAME_MENU_ICON_SCALE
+    if side > 1 then d.gmIcon:SetSize(side, side) end
+    UpdateGameMenuIcon(btn)
+
+    -- Blizzard's glyphs, latency bar and download/status bars: every texture
+    -- and child frame of the button that is not ours.
+    local regions = { btn:GetRegions() }
+    for i = 1, #regions do
+        local r = regions[i]
+        if r and r ~= d.bg and r.GetObjectType and r:GetObjectType() == "Texture" then KeepFaded(r, true) end
+    end
+    local children = { btn:GetChildren() }
+    for i = 1, #children do KeepFrameFaded(children[i]) end
+    for _, name in ipairs(GAME_MENU_EXTRAS) do
+        local x = btn[name] or _G[name]
+        if x and x.GetObjectType and x:GetObjectType() == "Texture" then KeepFaded(x, true)
+        else KeepFrameFaded(x) end
+    end
 end
 
 local function HookMicroPress(btn, d)
@@ -621,6 +702,7 @@ local function PaintMicro(btn, look, target)
     d.bg:SetColorTexture(look.bgR, look.bgG, look.bgB, look.bgA)
 
     for _, tex in pairs(MicroGlyphs(btn)) do TrimGlyph(tex, d.box) end
+    StyleGameMenu(btn, d)
     HookMicroPress(btn, d)
 
     -- Own strips rather than EUI's PP border: the box is anchored (no size of its
