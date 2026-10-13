@@ -606,7 +606,7 @@ end
 -- their place, round and sized like the visible part of the other glyphs.
 -- The latency / status bars Blizzard draws over it are hidden too.
 local GAME_MENU_ICON = "Interface\\Icons\\inv_10_engineering_manufacturedparts_gear_uprez"
-local GAME_MENU_ICON_SCALE = 0.7 -- icon diameter, as a share of the button width
+local GAME_MENU_ICON_SCALE = 0.8 -- icon diameter, as a share of the button width
 local GAME_MENU_ICON_CROP = 0.1  -- crops the icon's baked-in frame off each edge
 local ROUND_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
 local GAME_MENU_EXTRAS = { "MainMenuBarPerformanceBar", "MainMenuBarPerformanceBarFrame", "MainMenuBarDownload" }
