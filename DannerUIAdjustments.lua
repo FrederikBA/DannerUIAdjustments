@@ -19,6 +19,10 @@
 --  the micro menu pack look. While one is active (Blizzard Skins+ > Window Skins
 --  is not Blizz Default / Off) this addon stands down for that bar so the two do
 --  not stack.
+--
+--  Unit frames: under EllesmereUI's WoW Forever unit frame style, the bronze
+--  frame art (portrait ring, bar tracks, name strip, level circle) keeps its
+--  shapes but is recoloured from the action bar border colour.
 --------------------------------------------------------------------------------
 local ADDON_NAME = ...
 
@@ -32,6 +36,7 @@ local DEFAULTS = {
     microNoDim = true,       -- keep disabled/locked micro buttons at full opacity
     matchActionBars = true,  -- read the look from the EUI Action Bars profile
     qualityBorders = false,  -- colour a bag's border by item quality (uncommon+)
+    unitFrames = true,       -- action bar look on EUI's WoW Forever unit frames
 }
 local DB = {}
 
@@ -795,16 +800,109 @@ local function PaintMicroMenu()
 end
 
 --------------------------------------------------------------------------------
+--  Unit frames (EllesmereUI's WoW Forever style)
+--
+--  The Forever frame art keeps its shapes (round portrait ring, plates behind
+--  the name and bars, level circle); only its bronze metal is recoloured:
+--  desaturated and tinted from the action bar border colour, so it reads as
+--  the same dark border. Vertex colour and desaturation only, on EUI's own art
+--  textures, so it is safe in combat too. EUI repaints the art (SetTexture /
+--  SetAtlas) on layout passes and target changes; a hook per texture puts the
+--  tint back at once.
+--------------------------------------------------------------------------------
+local SchedulePaint -- defined below
+local UNIT_FRAMES = {
+    "EllesmereUIUnitFrames_Player", "EllesmereUIUnitFrames_Target", "EllesmereUIUnitFrames_Focus",
+    "EllesmereUIUnitFrames_Pet", "EllesmereUIUnitFrames_TargetTarget", "EllesmereUIUnitFrames_FocusTarget",
+    "EllesmereUIUnitFrames_Boss1", "EllesmereUIUnitFrames_Boss2", "EllesmereUIUnitFrames_Boss3",
+    "EllesmereUIUnitFrames_Boss4", "EllesmereUIUnitFrames_Boss5",
+}
+-- The tint: a dark grey (UF_ART_SHADE) mixed with the border colour
+-- (UF_ART_MIX of it). A black border gives a dark gunmetal that still shows
+-- the art's bevels; a coloured border tints it.
+local UF_ART_SHADE = 0.45
+local UF_ART_MIX = 0.5
+
+local artTint = setmetatable({}, { __mode = "k" }) -- texture -> { r, g, b }
+local tintHooked = setmetatable({}, { __mode = "k" })
+local tintBusy = false
+local function ReTint(tex)
+    local c = artTint[tex]
+    if not c or tintBusy then return end
+    tintBusy = true
+    tex:SetDesaturated(true)
+    tex:SetVertexColor(c[1], c[2], c[3])
+    tintBusy = false
+end
+local function TintArt(tex, c)
+    if not (tex and tex.SetVertexColor) then return end
+    artTint[tex] = c
+    if not tintHooked[tex] then
+        tintHooked[tex] = true
+        for _, m in ipairs({ "SetTexture", "SetAtlas" }) do
+            if tex[m] then hooksecurefunc(tex, m, ReTint) end
+        end
+    end
+    ReTint(tex)
+end
+
+-- EUI latches its unit frame style for the session; this reads the same
+-- profile flags (the Forever variant of Blizzard Style).
+local function ForeverUFStyle()
+    if not (EllesmereUI and EllesmereUI.IS_FOREVER and EllesmereUI.GetActiveProfileData) then return false end
+    local data = EllesmereUI.GetActiveProfileData()
+    local p = data and data.addons and data.addons.EllesmereUIUnitFrames
+    return p and p.useBlizzardStyle and p.useForeverStyle and not p.useClassicStyle and true or false
+end
+
+local function PaintUnitFrame(frame, c)
+    -- Frames on the stock art carry EUI's art frame (the full and the small ones).
+    local af = frame._blizzArtFrame
+    if not af then return end
+    TintArt(af._art, c)
+    if af._artCut then
+        for i = 1, #af._artCut do TintArt(af._artCut[i], c) end
+    end
+    -- The round level badge (full frames only).
+    TintArt(frame._blizzLevelBadge, c)
+end
+
+local function PaintUnitFrames()
+    if not (DB.unitFrames and ForeverUFStyle()) then return end
+    local look = GetLook()
+    local k = UF_ART_SHADE * (1 - UF_ART_MIX)
+    local c = { k + look.brdR * UF_ART_MIX, k + look.brdG * UF_ART_MIX, k + look.brdB * UF_ART_MIX }
+    for _, name in ipairs(UNIT_FRAMES) do
+        local frame = _G[name]
+        if frame and not (frame.IsForbidden and frame:IsForbidden()) then
+            local d = GetFD(frame)
+            -- EUI's layout pass (it starts with SetHitRectInsets) creates the
+            -- art pieces on first use: tint them right after it.
+            if not d.layoutHooked and frame.SetHitRectInsets then
+                d.layoutHooked = true
+                hooksecurefunc(frame, "SetHitRectInsets", function() SchedulePaint() end)
+            end
+            local ok, err = pcall(PaintUnitFrame, frame, c)
+            if not ok and not d.errored then
+                d.errored = true
+                Print(name .. ": " .. tostring(err))
+            end
+        end
+    end
+end
+
+--------------------------------------------------------------------------------
 --  Apply
 --------------------------------------------------------------------------------
 local pending
-local function SchedulePaint()
+function SchedulePaint()
     if pending then return end
     pending = true
     C_Timer.After(0, function()
         pending = nil
         PaintBags()
         PaintMicroMenu()
+        PaintUnitFrames()
     end)
 end
 
@@ -850,8 +948,8 @@ local function RegisterOptions()
         modules = {
             {
                 key = "Bars",
-                title = "Bag & Micro Bar Skin",
-                description = "Gives the bag bar and micro menu the same look as your action bar buttons.",
+                title = "Bag, Micro Bar & Unit Frame Skin",
+                description = "Gives the bag bar, micro menu and WoW Forever unit frames the same look as your action bar buttons.",
                 pages = { "General" },
                 buildPage = function(_, parent, yOffset)
                     local W = EllesmereUI.Widgets
@@ -890,6 +988,14 @@ local function RegisterOptions()
                             if DB.microNoDim then DannerUIBags_Refresh()
                             else Print("Micro button dimming returns after /reload.") end
                         end); y = y - h
+                    _, h = W:SectionHeader(parent, "UNIT FRAMES", y); y = y - h
+                    _, h = W:Toggle(parent, "Skin the WoW Forever unit frames", y,
+                        function() return DB.unitFrames end,
+                        function(v)
+                            DB.unitFrames = v and true or false
+                            if DB.unitFrames then DannerUIBags_Refresh()
+                            else Print("Unit frame skin disabled. /reload to restore the Forever art.") end
+                        end); y = y - h
                     _, h = W:SectionHeader(parent, "LOOK", y); y = y - h
                     _, h = W:Toggle(parent, "Match Action Bars look", y,
                         function() return DB.matchActionBars end,
@@ -924,7 +1030,7 @@ boot:SetScript("OnEvent", function(self, event, name)
     end
 end)
 
-local HELP = "/dbags on | off | micro | microsize | nodim | quality | match | refresh | config | debug"
+local HELP = "/dbags on | off | micro | microsize | nodim | quality | unit | match | refresh | config | debug"
 SLASH_DANNERUIBAGS1 = "/dbags"
 SLASH_DANNERUIBAGS2 = "/danneruibags"
 SlashCmdList.DANNERUIBAGS = function(msg)
@@ -934,15 +1040,16 @@ SlashCmdList.DANNERUIBAGS = function(msg)
         Print(label .. (DB[key] and " on." or " off (/reload to restore the stock look)."))
     end
     if msg == "on" then
-        DB.enabled, DB.microBar = true, true; DannerUIBags_Refresh(); Print("Enabled.")
+        DB.enabled, DB.microBar, DB.unitFrames = true, true, true; DannerUIBags_Refresh(); Print("Enabled.")
     elseif msg == "off" then
-        DB.enabled, DB.microBar = false, false; Print("Disabled. /reload to restore the stock art.")
+        DB.enabled, DB.microBar, DB.unitFrames = false, false, false; Print("Disabled. /reload to restore the stock art.")
     elseif msg == "refresh" then
         DannerUIBags_Refresh()
     elseif msg == "micro" then toggle("microBar", "Micro menu skin")
     elseif msg == "microsize" then toggle("microMatchSize", "Micro button size match")
     elseif msg == "nodim" then toggle("microNoDim", "Keep disabled micro buttons opaque")
     elseif msg == "quality" then toggle("qualityBorders", "Quality borders")
+    elseif msg == "unit" then toggle("unitFrames", "Unit frame skin")
     elseif msg == "match" then toggle("matchActionBars", "Match Action Bars look")
     elseif msg == "config" then
         if EllesmereUI and EllesmereUI.OpenPlugin then EllesmereUI.OpenPlugin("DannerUIBags")
