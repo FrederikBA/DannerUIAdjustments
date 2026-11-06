@@ -61,6 +61,8 @@ local MICRO_DECO = { "Background", "PushedBackground", "FlashBorder", "Shadow", 
 local MICRO_TRIM = 0.08   -- crops the glyph's baked bevel ring
 local MICRO_GAP = 1       -- logical px above/below our box
 local MICRO_WIDTH_EXTRA = 4 -- logical px added to each micro button's stock width
+local MICRO_PAD = 0.12      -- glyph padding inside our box, as a share of the box width
+local MICRO_BORDER = 0.07   -- box border thickness, as a share of the box width
 
 -- BagsBar container backdrop atlases (the stock strip behind the slots).
 local FRAME_ATLASES = { "actionbar-frame", "iconframe-background" }
@@ -150,7 +152,9 @@ end
 --  Borders: EUI's pixel-perfect border when present, else four 1px strips.
 --  `host` is the frame the border is drawn around (the button, or our micro box).
 --------------------------------------------------------------------------------
-local function SetStripBorder(d, host, look, r, g, b, a)
+-- `thick` (optional, logical px) asks for a thicker border than the profile's;
+-- it is snapped to whole physical pixels.
+local function SetStripBorder(d, host, look, r, g, b, a, thick)
     if not d.strips then
         local box = CreateFrame("Frame", nil, host)
         box:SetAllPoints(host)
@@ -167,7 +171,10 @@ local function SetStripBorder(d, host, look, r, g, b, a)
     local s = d.strips
     local scale = host:GetEffectiveScale()
     local _, physH = GetPhysicalScreenSize()
-    local px = (768 / (physH or 768)) / (scale > 0 and scale or 1) * look.brdSize
+    local unit = (768 / (physH or 768)) / (scale > 0 and scale or 1)
+    local n = look.brdSize
+    if thick then n = math.max(n, math.floor(thick / unit + 0.5)) end
+    local px = unit * n
     s[1]:ClearAllPoints(); s[1]:SetPoint("TOPLEFT");     s[1]:SetPoint("TOPRIGHT");    s[1]:SetHeight(px)
     s[2]:ClearAllPoints(); s[2]:SetPoint("BOTTOMLEFT");  s[2]:SetPoint("BOTTOMRIGHT"); s[2]:SetHeight(px)
     s[3]:ClearAllPoints(); s[3]:SetPoint("TOPLEFT");     s[3]:SetPoint("BOTTOMLEFT");  s[3]:SetWidth(px)
@@ -532,18 +539,19 @@ local function CollectMicroButtons()
     return list
 end
 
--- Crop the glyph's baked bevel ring and fill the box with it: stock width, the
--- increased height of the action bar buttons. The hover glyph keeps its
--- HIGHLIGHT layer, so the engine still shows it only while hovered.
-local function TrimGlyph(tex, box)
+-- Crop the glyph's baked bevel ring and fit it in the box, MICRO_PAD of the
+-- button width in from each edge. The hover glyph keeps its HIGHLIGHT layer,
+-- so the engine still shows it only while hovered.
+local function TrimGlyph(tex, box, btn)
     if not tex or not tex.SetTexCoord then return end
     if tex.SetDrawLayer and not (tex.GetDrawLayer and tex:GetDrawLayer() == "HIGHLIGHT") then
         tex:SetDrawLayer("ARTWORK")
     end
     tex:SetTexCoord(MICRO_TRIM, 1 - MICRO_TRIM, MICRO_TRIM, 1 - MICRO_TRIM)
     tex:ClearAllPoints()
-    tex:SetPoint("TOPLEFT", box, "TOPLEFT", 1, -1)
-    tex:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -1, 1)
+    local pad = math.max(1, (btn:GetWidth() or 0) * MICRO_PAD)
+    tex:SetPoint("TOPLEFT", box, "TOPLEFT", pad, -pad)
+    tex:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -pad, pad)
 end
 
 -- The character button's player portrait. Their PortraitMask (a fixed-size
@@ -551,7 +559,7 @@ end
 -- the portrait is drawn square, centred in the box and sized like the Game Menu
 -- gear. Blizzard re-renders the portrait on portrait events, so the crop is put
 -- back after every SetPortraitTexture.
-local CHARACTER_ICON_SCALE = 1 -- icon side, as a share of the button width
+local CHARACTER_ICON_SCALE = 1 - 2 * MICRO_PAD -- icon side, as a share of the button width
 local CHARACTER_ICON_CROP = 0.08 -- trimmed off each edge of the portrait
 local portraitHooked = false
 local function FitPortrait(btn, box)
@@ -600,7 +608,7 @@ local function RefitMicro(btn)
         local r = btn[k]
         if r and r.SetAlpha then r:SetAlpha(0) end
     end
-    for _, tex in pairs(MicroGlyphs(btn)) do TrimGlyph(tex, d.box) end
+    for _, tex in pairs(MicroGlyphs(btn)) do TrimGlyph(tex, d.box, btn) end
     FitPortrait(btn, d.box)
     StyleGameMenu(btn, d)
 end
@@ -611,7 +619,7 @@ end
 -- their place, round and sized like the visible part of the other glyphs.
 -- The latency / status bars Blizzard draws over it are hidden too.
 local GAME_MENU_ICON = "Interface\\Icons\\inv_10_engineering_manufacturedparts_gear_uprez"
-local GAME_MENU_ICON_SCALE = 0.8 -- icon diameter, as a share of the button width
+local GAME_MENU_ICON_SCALE = 0.76 -- icon diameter, as a share of the button width
 local GAME_MENU_ICON_CROP = 0.1  -- crops the icon's baked-in frame off each edge
 local ROUND_MASK = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
 local GAME_MENU_EXTRAS = { "MainMenuBarPerformanceBar", "MainMenuBarPerformanceBarFrame", "MainMenuBarDownload" }
@@ -734,14 +742,15 @@ local function PaintMicro(btn, look, target)
     d.box:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", 0, MICRO_GAP)
     d.bg:SetColorTexture(look.bgR, look.bgG, look.bgB, look.bgA)
 
-    for _, tex in pairs(MicroGlyphs(btn)) do TrimGlyph(tex, d.box) end
+    for _, tex in pairs(MicroGlyphs(btn)) do TrimGlyph(tex, d.box, btn) end
     FitPortrait(btn, d.box)
     StyleGameMenu(btn, d)
     HookMicroPress(btn, d)
 
     -- Own strips rather than EUI's PP border: the box is anchored (no size of its
     -- own), and the strips follow it however Blizzard's layout moves the button.
-    SetStripBorder(d, d.box, look, look.brdR, look.brdG, look.brdB, look.brdA)
+    SetStripBorder(d, d.box, look, look.brdR, look.brdG, look.brdB, look.brdA,
+        (btn:GetWidth() or 0) * MICRO_BORDER)
     return resized
 end
 
